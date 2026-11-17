@@ -1,0 +1,208 @@
+[
+  {
+    "id": "aba_pratica",
+    "type": "tab",
+    "label": "Prática TCP - planta de nível",
+    "disabled": false,
+    "info": "Cada comando u avança um passo de Ts=1 s."
+  },
+  {
+    "id": "tcp_sensor",
+    "type": "tcp in",
+    "z": "aba_pratica",
+    "name": "Servidor sensor :5001",
+    "server": "server",
+    "host": "",
+    "port": "5001",
+    "datamode": "stream",
+    "datatype": "utf8",
+    "newline": "\\n",
+    "topic": "",
+    "trim": false,
+    "base64": false,
+    "tls": "",
+    "x": 170,
+    "y": 100,
+    "wires": [
+      [
+        "parse_sensor"
+      ]
+    ]
+  },
+  {
+    "id": "parse_sensor",
+    "type": "function",
+    "z": "aba_pratica",
+    "name": "Medida / HELLO",
+    "func": "const texto = String(msg.payload).trim();\nflow.set(\"sensorSession\", msg._session);\nif (texto.toUpperCase() === \"HELLO\") return null;\nif (!/^(?:\\d+\\.?\\d*|\\.\\d+)$/.test(texto)) {\n    node.warn(\"Sensor: envie um número >= 0 ou HELLO.\");\n    return null;\n}\nmsg.topic = \"sensor\";\nmsg.payload = Number(texto);\nreturn msg;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 390,
+    "y": 100,
+    "wires": [
+      [
+        "planta"
+      ]
+    ]
+  },
+  {
+    "id": "tcp_atuador",
+    "type": "tcp in",
+    "z": "aba_pratica",
+    "name": "Servidor atuador :5002",
+    "server": "server",
+    "host": "",
+    "port": "5002",
+    "datamode": "stream",
+    "datatype": "utf8",
+    "newline": "\\n",
+    "topic": "",
+    "trim": false,
+    "base64": false,
+    "tls": "",
+    "x": 170,
+    "y": 220,
+    "wires": [
+      [
+        "parse_atuador"
+      ]
+    ]
+  },
+  {
+    "id": "parse_atuador",
+    "type": "function",
+    "z": "aba_pratica",
+    "name": "Validar u",
+    "func": "const texto = String(msg.payload).trim();\nif (!/^(?:\\d+\\.?\\d*|\\.\\d+)$/.test(texto)) {\n    node.warn(\"Atuador: envie um número >= 0.\");\n    return null;\n}\nmsg.topic = \"atuador\";\nmsg.payload = Number(texto);\nreturn msg;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 390,
+    "y": 220,
+    "wires": [
+      [
+        "planta"
+      ]
+    ]
+  },
+  {
+    "id": "inject_u",
+    "type": "inject",
+    "z": "aba_pratica",
+    "name": "Forçar u = 10",
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "atuador",
+    "payload": "10",
+    "payloadType": "num",
+    "x": 170,
+    "y": 310,
+    "wires": [
+      [
+        "planta"
+      ]
+    ]
+  },
+  {
+    "id": "inject_h",
+    "type": "inject",
+    "z": "aba_pratica",
+    "name": "Forçar h = 0",
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "sensor",
+    "payload": "0",
+    "payloadType": "num",
+    "x": 170,
+    "y": 370,
+    "wires": [
+      [
+        "planta"
+      ]
+    ]
+  },
+  {
+    "id": "planta",
+    "type": "function",
+    "z": "aba_pratica",
+    "name": "Planta de nível G(z)",
+    "func": "// Modelo de nível de primeira ordem: G(s) = K/(tau*s + 1).\n// Discretização exata com retenção de ordem zero:\n// h[k+1] = a*h[k] + K*(1-a)*u[k], a = exp(-Ts/tau).\nconst K = 1;\nconst tau = 5; // segundos\nconst Ts = 1;  // segundo por mensagem de controle\nconst a = Math.exp(-Ts / tau);\n\nif (msg.topic === \"sensor\") {\n    // O cliente sensor fornece uma medida para inicializar/corrigir h[k].\n    const h = Number(msg.payload);\n    if (!Number.isFinite(h) || h < 0) {\n        node.warn(\"Medida de nível inválida.\");\n        return null;\n    }\n    flow.set(\"nivel\", h);\n    // A inicialização não avança o tempo discreto.\n    const saida = { payload: `${h.toFixed(3)}\\n`, topic: \"nivel\", _session: flow.get(\"sensorSession\") };\n    return [saida._session ? saida : null, { payload: h, topic: \"nível inicializado\" }];\n}\n\nconst u = Number(msg.payload);\nif (!Number.isFinite(u) || u < 0) {\n    node.warn(\"Controle inválido.\");\n    return null;\n}\nconst h = Number(flow.get(\"nivel\") ?? 0);\nconst proximo = a * h + K * (1 - a) * u;\nflow.set(\"nivel\", proximo);\nflow.set(\"amostra\", Number(flow.get(\"amostra\") ?? 0) + 1);\nconst saida = { payload: `${proximo.toFixed(3)}\\n`, topic: \"nivel\", _session: flow.get(\"sensorSession\") };\nreturn [saida._session ? saida : null,\n        { payload: { k: flow.get(\"amostra\"), u, h: proximo }, topic: \"planta\" }];\n",
+    "outputs": 2,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 650,
+    "y": 180,
+    "wires": [
+      [
+        "tcp_resposta"
+      ],
+      [
+        "debug_planta"
+      ]
+    ]
+  },
+  {
+    "id": "tcp_resposta",
+    "type": "tcp out",
+    "z": "aba_pratica",
+    "name": "Saída ao sensor",
+    "host": "",
+    "port": "",
+    "beserver": "reply",
+    "base64": false,
+    "end": false,
+    "tls": "",
+    "x": 900,
+    "y": 140,
+    "wires": []
+  },
+  {
+    "id": "debug_planta",
+    "type": "debug",
+    "z": "aba_pratica",
+    "name": "Amostra k, u, h",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 900,
+    "y": 220,
+    "wires": []
+  }
+]
